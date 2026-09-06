@@ -3,6 +3,7 @@ package snowflakeid
 import (
 	"errors"
 	"net"
+	"os"
 	"sync"
 	"time"
 )
@@ -45,8 +46,8 @@ func NewSnowflake(machineID int64) (*Snowflake, error) {
 	return &Snowflake{machineID: machineID}, nil
 }
 
-// NewSnowflakeAuto 自动从本机MAC地址派生 machineID
-// NewSnowflakeAuto derives the machineID automatically from the local MAC address.
+// NewSnowflakeAuto 自动从本机MAC地址与进程PID派生 machineID
+// NewSnowflakeAuto derives the machineID automatically from the local MAC address and process ID.
 func NewSnowflakeAuto() (*Snowflake, error) {
 	mid, err := getMachineID()
 	if err != nil {
@@ -110,9 +111,16 @@ func currentTick() int64 {
 	return time.Now().UnixMilli() - epoch
 }
 
-// getMachineID 取第一块非回环网卡 MAC 地址的低12位作为机器ID
+// getMachineID 用 MAC 低12位异或进程PID派生机器ID：
+// MAC 区分不同机器，PID 区分同一机器上的多个进程。
+// XOR 对固定 MAC 是双射，同机不同进程必然得到不同 machineID，
+// 消除"同机多进程"的确定性冲突。代价：machineID 随进程重启而变化，不可持久化。
 // getMachineID derives the machine ID from the low 12 bits of the first
-// non-loopback NIC's MAC address.
+// non-loopback NIC's MAC address, XORed with the process ID:
+// the MAC separates machines, the PID separates processes on the same machine.
+// XOR with a fixed MAC is a bijection, so distinct processes on one machine
+// always get distinct machine IDs. Note: the ID changes across restarts —
+// do not persist it.
 func getMachineID() (int64, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -124,10 +132,10 @@ func getMachineID() (int64, error) {
 		}
 		if len(iface.HardwareAddr) >= 6 {
 			mac := iface.HardwareAddr
-			// 取MAC最后两字节，截取低12位
-			// Use the last two bytes of the MAC address, keep the low 12 bits.
+			// MAC末两字节（机器维度）异或PID（进程维度），截取低12位
+			// Last two MAC bytes (machine) XOR the PID (process), keep low 12 bits.
 			val := int64(mac[len(mac)-2])<<8 | int64(mac[len(mac)-1])
-			return val & maxMachineID, nil
+			return (val ^ int64(os.Getpid())) & maxMachineID, nil
 		}
 	}
 	return 0, errors.New("no valid network interface found")

@@ -232,16 +232,39 @@ The shard pool eliminates this problem entirely — contention drops to 1/N, seq
 ## Auto Machine ID Derivation
 
 ```go
-// Take the last two bytes of the first non-loopback NIC's MAC address, keep low 12 bits
+// Last two bytes of the first non-loopback NIC's MAC (machine dimension),
+// XORed with the process ID (process dimension), keep low 12 bits
 val := int64(mac[len(mac)-2])<<8 | int64(mac[len(mac)-1])
-return val & 0xFFF, nil
+return (val ^ int64(os.Getpid())) & 0xFFF, nil
 ```
 
-MAC addresses are globally unique, so collision probability within the same LAN is negligible. No manual configuration needed.
+The MAC separates machines; the PID separates processes on the same machine.
+
+### Why mix in the PID
+
+With only the MAC low 12 bits, **multiple processes on one machine collide deterministically**: the machine ID is machine-level, so two processes get the same value, number independently, and produce duplicate IDs as soon as they hit the same millisecond with the same sequence number.
+
+With the PID mixed in, XOR over a fixed MAC is a **bijection** — distinct processes on one machine always get distinct machine IDs:
+
+```
+process A: mac ^ pidA = 3619 ^ 100 = 3551
+process B: mac ^ pidB = 3619 ^ 101 = 3550   ← always distinct
+```
+
+Bonus: after a restart the PID changes, so the machine ID usually changes too — which conveniently sidesteps the "restart within the same millisecond, sequence restarts at zero" collision window.
+
+Residual risks (the inherent ceiling without external coordination):
+
+| Scenario | Condition | Probability |
+|----------|-----------|-------------|
+| Cross-machine | both machines share the same MAC low-12 AND PIDs differ by a multiple of 4096 | very low |
+| Same machine | two processes' PIDs differ by a multiple of 4096 (1024 for v4) | very low |
+
+Note: the machine ID changes across restarts — **do not persist it**. For large clusters, coordinated assignment is still recommended (manual config, K8s StatefulSet ordinal, etcd).
 
 ### Why AND with maxMachineID
 
-`getMachineID` uniformly keeps the low 12 bits of the MAC, but v4's machine ID is only 10 bits wide (`maxMachineID4 = 1023`) — passing a 12-bit value directly would be out of range. The bitmask keeps only the low 10 bits, mapping [0, 4095] onto the legal [0, 1023]:
+`getMachineID` returns a 12-bit mixed value, but v4's machine ID is only 10 bits wide (`maxMachineID4 = 1023`) — passing a 12-bit value directly would be out of range. The bitmask keeps only the low 10 bits, mapping [0, 4095] onto the legal [0, 1023]:
 
 ```
 mid           = 0b101100111010   (12 bits, 3619)
@@ -252,7 +275,7 @@ result        = 0b000000111010   (10 bits, 58)
 
 A machine ID is a bit field, not a numeric value — `& mask` directly expresses "extract the bit field" semantics (equivalent to `mid % 1024`) and is the standard Snowflake idiom.
 
-The cost: 12→10-bit truncation drops the top 2 bits. Two machines whose MAC low-12-bits differ only in those 2 bits derive the same machine ID — 4× higher collision probability than v1–v3 (12 bits). This is the inherent trade-off of v4's Twitter layout (10-bit machine ID, 1024 nodes).
+The cost: 12→10-bit truncation drops the top 2 bits, making cross-machine collisions 4× more likely than v1–v3 (12 bits). This is the inherent trade-off of v4's Twitter layout (10-bit machine ID, 1024 nodes).
 
 Note: `getMachineID` takes ~4.3 ms and allocates on the heap. Call it once at initialization — never on the hot path.
 
