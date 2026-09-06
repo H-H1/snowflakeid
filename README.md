@@ -1,21 +1,23 @@
 # Distributed ID Generator &nbsp;|&nbsp; <a href="README_zh.md">中文文档</a>
 
-A high-performance Snowflake-based distributed ID generator in Go, with three bit-layout variants and a shard pool for near-lock-free throughput.
+A high-performance Snowflake-based distributed ID generator in Go, with four bit-layout variants and a shard pool for near-lock-free throughput.
 
 ---
 
-## Three Variants at a Glance
+## Four Variants at a Glance
 
 | Variant | Timestamp bits | Precision | Machine ID bits | Sequence bits | Time span | Single-instance | Shard pool |
 |---------|---------------|-----------|-----------------|---------------|-----------|-----------------|------------|
 | v1 (this project) | 40 | 1 ms | 12 (4096 nodes) | 11 (2048/ms) | ~34 yr | ~890K/s | ~9.76M/s |
 | v2 | 43 | 1 ms | 12 (4096 nodes) | 8 (256/ms) | ~278 yr | ~120K/s | ~1.02M/s |
 | v3 | 42 | 1 ms | 12 (4096 nodes) | 9 (512/ms) | ~139 yr | ~250K/s | ~1.70M/s |
+| v4 | 41 | 1 ms | 10 (1024 nodes) | 12 (4096/ms) | ~69 yr | ~4M/s | ~12M/s |
 | bwmarrin/snowflake | 41 | 1 ms | 10 (1024 nodes) | 12 (4096/ms) | ~69 yr | ~4M/s | — |
 | sony/sonyflake | 39 | 10 ms | 16 (65536 nodes) | 8 (256/10ms) | ~174 yr | ~25K/s | — |
 | Twitter original | 41 | 1 ms | 10 (1024 nodes) | 12 (4096/ms) | ~69 yr | — | — |
 
-All three variants use 12-bit machine IDs and 63 effective bits (int64 minus sign bit).
+v1–v3 use 12-bit machine IDs (4096 nodes); v4 uses 10 bits (1024 nodes, Twitter layout).
+All variants use 63 effective bits (int64 minus sign bit).
 The trade-off is fixed: timestamp + machine ID + sequence = 63 bits.
 
 ---
@@ -23,9 +25,9 @@ The trade-off is fixed: timestamp + machine ID + sequence = 63 bits.
 ## ID Structure (v1)
 
 ```
- 63      62                    23        22          11        10          0
-  |       |                     |         |           |         |          |
-  0  [       40-bit ms timestamp  ] [  12-bit machine ID  ] [  11-bit sequence  ]
+63 62                    23  22           11  10            0
+  | |                      ||               ||              |
+  0 [    timestamp(40)     ][ machineID(12) ][ sequence(11) ]
 ```
 
 | Field | Bits | Range | Notes |
@@ -50,6 +52,23 @@ Because the timestamp occupies the high bits, IDs are naturally time-ordered —
 ```
 
 When the epoch approaches expiry, update it to a more recent date to extend the range.
+
+### Why subtract the epoch
+
+```go
+tick := time.Now().UnixMilli() - epoch
+```
+
+`UnixMilli()` returns absolute milliseconds since 1970-01-01 (currently ≈ 1.79e12). Subtracting the epoch (the UnixMilli of 2024-01-01) resets the counter to zero — the stored value is "milliseconds elapsed since 2024".
+
+Storing the absolute timestamp would waste the bit budget on the 54 years that already passed (1970→2024). Take v3 (42-bit, ~139-year cap) as an example:
+
+| Storage | Starts at | Overflows | Remaining from 2026 |
+|---------|-----------|-----------|---------------------|
+| Absolute Unix ms | 1970 | year 2109 | ~83 yr |
+| Offset from epoch | 2024 | year 2163 | **~137 yr** |
+
+Subtracting the epoch re-zeroes the counter so the entire bit field is reserved for the future — that is what maximizes the time span. To decode a timestamp back, add the epoch: `time.UnixMilli(epoch + id>>timeShift)`.
 
 ---
 
@@ -220,6 +239,21 @@ return val & 0xFFF, nil
 
 MAC addresses are globally unique, so collision probability within the same LAN is negligible. No manual configuration needed.
 
+### Why AND with maxMachineID
+
+`getMachineID` uniformly keeps the low 12 bits of the MAC, but v4's machine ID is only 10 bits wide (`maxMachineID4 = 1023`) — passing a 12-bit value directly would be out of range. The bitmask keeps only the low 10 bits, mapping [0, 4095] onto the legal [0, 1023]:
+
+```
+mid           = 0b101100111010   (12 bits, 3619)
+maxMachineID4 = 0b000011111111   (10-bit mask, 1023)
+────────────────────────────────
+result        = 0b000000111010   (10 bits, 58)
+```
+
+A machine ID is a bit field, not a numeric value — `& mask` directly expresses "extract the bit field" semantics (equivalent to `mid % 1024`) and is the standard Snowflake idiom.
+
+The cost: 12→10-bit truncation drops the top 2 bits. Two machines whose MAC low-12-bits differ only in those 2 bits derive the same machine ID — 4× higher collision probability than v1–v3 (12 bits). This is the inherent trade-off of v4's Twitter layout (10-bit machine ID, 1024 nodes).
+
 Note: `getMachineID` takes ~4.3 ms and allocates on the heap. Call it once at initialization — never on the hot path.
 
 ---
@@ -234,6 +268,12 @@ id, err := sf.NextID()
 // Shard pool (recommended for high concurrency)
 pool, err := snowflakeid.NewShardPool(sf.MachineID())
 id, err := pool.NextID(goroutineIndex)
+
+// v4 (Twitter layout, highest single-instance throughput)
+sf4, err := snowflakeid.NewSnowflake4Auto()
+id, err := sf4.NextID()
+pool4, err := snowflakeid.NewShardPool4(sf4.MachineID())
+id, err := pool4.NextID(goroutineIndex)
 ```
 
 ---

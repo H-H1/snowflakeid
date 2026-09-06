@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"fmt"
@@ -156,6 +156,21 @@ func main() {
 	})
 	benchmark("\u672c\u9879\u76ee3 \u5206\u7247\u6c60", num, func(idx int) (int64, error) {
 		return pool3.NextID(int64(idx))
+	})
+
+	sf4, err := snowflakeid.NewSnowflake4Auto()
+	if err != nil {
+		panic(err)
+	}
+	pool4, err := snowflakeid.NewShardPool4(sf4.MachineID())
+	if err != nil {
+		panic(err)
+	}
+	benchmark("\u672c\u9879\u76ee4 \u5355\u5b9e\u4f8b", num, func(_ int) (int64, error) {
+		return sf4.NextID()
+	})
+	benchmark("\u672c\u9879\u76ee4 \u5206\u7247\u6c60", num, func(idx int) (int64, error) {
+		return pool4.NextID(int64(idx))
 	})
 	fmt.Println()
 

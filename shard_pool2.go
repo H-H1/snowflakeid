@@ -65,3 +65,35 @@ func (p *ShardPool3) NextID(idx int64) (int64, error) {
 // Size 返回分片数（等于物理核心数）。
 // Size returns the number of shards (equals physical core count).
 func (p *ShardPool3) Size() int64 { return p.size }
+
+// ShardPool4 本项目4的分片池（序列号12位，时间戳41位，~69年，Twitter布局）
+// ShardPool4 is the shard pool for Snowflake4 (12-bit sequence, 41-bit timestamp, ~69 years, Twitter layout).
+type ShardPool4 struct {
+	shards []*Snowflake4
+	size   int64 // 分片数（等于物理核心数）/ shard count (equals physical core count)
+}
+
+// NewShardPool4 创建 Snowflake4 分片池，baseID 为机器ID基础值。
+// NewShardPool4 creates a shard pool for Snowflake4; baseID is the base machine ID.
+func NewShardPool4(baseID int64) (*ShardPool4, error) {
+	n := physicalCores()
+	shards := make([]*Snowflake4, n)
+	for i := int64(0); i < n; i++ {
+		sf, err := NewSnowflake4((baseID + i) & maxMachineID4)
+		if err != nil {
+			return nil, err
+		}
+		shards[i] = sf
+	}
+	return &ShardPool4{shards: shards, size: n}, nil
+}
+
+// NextID 根据调用方索引路由到对应分片生成 ID。
+// NextID routes to the shard at idx % size and generates an ID.
+func (p *ShardPool4) NextID(idx int64) (int64, error) {
+	return p.shards[idx%p.size].NextID()
+}
+
+// Size 返回分片数（等于物理核心数）。
+// Size returns the number of shards (equals physical core count).
+func (p *ShardPool4) Size() int64 { return p.size }
