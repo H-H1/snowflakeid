@@ -45,8 +45,8 @@ func NewSnowflake4(machineID int64) (*Snowflake4, error) {
 	return &Snowflake4{machineID: machineID}, nil
 }
 
-// NewSnowflake4Auto 自动从本机MAC地址与进程PID派生 machineID（低10位）
-// NewSnowflake4Auto derives the machineID automatically from the local MAC address and process ID (low 10 bits).
+// NewSnowflake4Auto 自动从本机MAC地址、进程PID与启动时间派生 machineID（低10位）
+// NewSnowflake4Auto derives the machineID automatically from the local MAC address, process ID and startup time (low 10 bits).
 func NewSnowflake4Auto() (*Snowflake4, error) {
 	mid, err := getMachineID4()
 	if err != nil {
@@ -106,9 +106,9 @@ func currentTick4() int64 {
 	return time.Now().UnixMilli() - epoch4
 }
 
-// getMachineID4 取 MAC低12位^PID 的混合值，再截取低10位作为机器ID
-// getMachineID4 derives the machine ID from the MAC/PID mix (low 12 bits),
-// further truncated to the low 10 bits.
+// getMachineID4 取 MAC低12位^PID^启动纳秒 的混合值，再截取低10位作为机器ID
+// getMachineID4 derives the machine ID from the MAC/PID/startup-time mix
+// (low 12 bits), further truncated to the low 10 bits.
 func getMachineID4() (int64, error) {
 	mid, err := getMachineID()
 	if err != nil {

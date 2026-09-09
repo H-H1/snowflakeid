@@ -46,8 +46,8 @@ func NewSnowflake(machineID int64) (*Snowflake, error) {
 	return &Snowflake{machineID: machineID}, nil
 }
 
-// NewSnowflakeAuto 自动从本机MAC地址与进程PID派生 machineID
-// NewSnowflakeAuto derives the machineID automatically from the local MAC address and process ID.
+// NewSnowflakeAuto 自动从本机MAC地址、进程PID与启动时间派生 machineID
+// NewSnowflakeAuto derives the machineID automatically from the local MAC address, process ID and startup time.
 func NewSnowflakeAuto() (*Snowflake, error) {
 	mid, err := getMachineID()
 	if err != nil {
@@ -111,16 +111,25 @@ func currentTick() int64 {
 	return time.Now().UnixMilli() - epoch
 }
 
-// getMachineID 用 MAC 低12位异或进程PID派生机器ID：
-// MAC 区分不同机器，PID 区分同一机器上的多个进程。
-// XOR 对固定 MAC 是双射，同机不同进程必然得到不同 machineID，
-// 消除"同机多进程"的确定性冲突。代价：machineID 随进程重启而变化，不可持久化。
-// getMachineID derives the machine ID from the low 12 bits of the first
-// non-loopback NIC's MAC address, XORed with the process ID:
-// the MAC separates machines, the PID separates processes on the same machine.
-// XOR with a fixed MAC is a bijection, so distinct processes on one machine
-// always get distinct machine IDs. Note: the ID changes across restarts —
-// do not persist it.
+// getMachineID 用 MAC低12位 ^ 进程PID ^ 启动时刻纳秒 三维度混合派生机器ID：
+//   - MAC：区分不同机器（Docker 网卡 MAC 由 IP 派生，低12位可能相同）
+//   - PID：区分同机进程（容器 PID namespace 隔离，各容器常见 PID=1，此维度会失效）
+//   - 启动纳秒：兜底 PID 复用与容器场景，重启后 machineID 几乎必然变化
+//
+// 冲突需三个因子的低12位同时抵消，概率 ≈ 1/4096（v4 为 1/1024），
+// 消除了"同机多进程""PID 复用重启"等结构性必然冲突。
+// 代价：machineID 每次启动都不同，不可持久化；
+// 且 getMachineID 不再幂等（时间参与混合），只能在初始化时调用一次。
+//
+// getMachineID derives the machine ID by XORing three dimensions:
+// the low 12 bits of the first non-loopback NIC's MAC (machine),
+// the process ID (process — PID namespaces make it 1 in every container),
+// and the startup time in nanoseconds (lifetime — rescues PID reuse and the
+// container case, and makes the ID change across restarts).
+// A collision requires all three low-12-bit factors to cancel out (~1/4096;
+// 1/1024 for v4), eliminating the structured deterministic collisions.
+// The ID must not be persisted, and getMachineID is no longer idempotent —
+// call it exactly once at initialization.
 func getMachineID() (int64, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -132,10 +141,10 @@ func getMachineID() (int64, error) {
 		}
 		if len(iface.HardwareAddr) >= 6 {
 			mac := iface.HardwareAddr
-			// MAC末两字节（机器维度）异或PID（进程维度），截取低12位
-			// Last two MAC bytes (machine) XOR the PID (process), keep low 12 bits.
+			// MAC（机器维度）^ PID（进程维度）^ 启动纳秒（生命周期维度），截取低12位
+			// MAC (machine) ^ PID (process) ^ startup nanos (lifetime), keep low 12 bits.
 			val := int64(mac[len(mac)-2])<<8 | int64(mac[len(mac)-1])
-			return (val ^ int64(os.Getpid())) & maxMachineID, nil
+			return (val ^ int64(os.Getpid()) ^ time.Now().UnixNano()) & maxMachineID, nil
 		}
 	}
 	return 0, errors.New("no valid network interface found")

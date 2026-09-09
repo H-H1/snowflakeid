@@ -232,35 +232,32 @@ The shard pool eliminates this problem entirely — contention drops to 1/N, seq
 ## Auto Machine ID Derivation
 
 ```go
-// Last two bytes of the first non-loopback NIC's MAC (machine dimension),
-// XORed with the process ID (process dimension), keep low 12 bits
+// Last two bytes of the first non-loopback NIC's MAC (machine dimension)
+// ^ process ID (process dimension) ^ startup time in nanoseconds
+// (lifetime dimension), keep low 12 bits
 val := int64(mac[len(mac)-2])<<8 | int64(mac[len(mac)-1])
-return (val ^ int64(os.Getpid())) & 0xFFF, nil
+return (val ^ int64(os.Getpid()) ^ time.Now().UnixNano()) & 0xFFF, nil
 ```
 
-The MAC separates machines; the PID separates processes on the same machine.
-
-### Why mix in the PID
+### Why mix in the PID and the startup time
 
 With only the MAC low 12 bits, **multiple processes on one machine collide deterministically**: the machine ID is machine-level, so two processes get the same value, number independently, and produce duplicate IDs as soon as they hit the same millisecond with the same sequence number.
 
-With the PID mixed in, XOR over a fixed MAC is a **bijection** — distinct processes on one machine always get distinct machine IDs:
+Adding just the PID still leaves two failure modes:
 
-```
-process A: mac ^ pidA = 3619 ^ 100 = 3551
-process B: mac ^ pidB = 3619 ^ 101 = 3550   ← always distinct
-```
+| Scenario | Why |
+|----------|-----|
+| Containers | PID namespaces isolate — every container sees its own PID as 1, so the PID dimension fails entirely |
+| PID reuse | Linux recycles PIDs; a restart can draw the same PID again, reopening the collision window |
 
-Bonus: after a restart the PID changes, so the machine ID usually changes too — which conveniently sidesteps the "restart within the same millisecond, sequence restarts at zero" collision window.
+Hence the third dimension: **startup time in nanoseconds**. Time moves forward monotonically, so it naturally distinguishes two process lifetimes — after a restart the nanos differ, the machine ID changes, and the "restart within the same millisecond, sequence restarts at zero" window is sidestepped.
 
-Residual risks (the inherent ceiling without external coordination):
+A collision requires the low 12 bits of all three factors to cancel out **simultaneously** — probability ≈ 1/4096 (1/1024 for v4). Every structured deterministic collision (same-machine multi-process, PID reuse, containers) is reduced to a uniform random one, which is near the theoretical floor for any coordination-free scheme: a 12-bit space holds only 4096 values, the collision lower bound is the birthday problem, and fleets of a few dozen instances should switch to coordinated assignment.
 
-| Scenario | Condition | Probability |
-|----------|-----------|-------------|
-| Cross-machine | both machines share the same MAC low-12 AND PIDs differ by a multiple of 4096 | very low |
-| Same machine | two processes' PIDs differ by a multiple of 4096 (1024 for v4) | very low |
-
-Note: the machine ID changes across restarts — **do not persist it**. For large clusters, coordinated assignment is still recommended (manual config, K8s StatefulSet ordinal, etcd).
+Notes:
+- The machine ID differs on every launch — **do not persist it**
+- `getMachineID` is no longer idempotent (time participates in the mix) — call it exactly once at initialization
+- For large clusters, coordinated assignment is still recommended (manual config, K8s StatefulSet ordinal, etcd)
 
 ### Why AND with maxMachineID
 
