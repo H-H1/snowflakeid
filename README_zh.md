@@ -279,6 +279,8 @@ maxMachineID4 = 0b000011111111   (10位掩码, 1023)
 ## 快速开始
 
 ```go
+import snowflakeid "github.com/H-H1/snowflakeid/snowflakeid"
+
 // 单实例
 sf, err := snowflakeid.NewSnowflakeAuto()
 id, err := sf.NextID()
@@ -292,6 +294,28 @@ sf4, err := snowflakeid.NewSnowflake4Auto()
 id, err := sf4.NextID()
 pool4, err := snowflakeid.NewShardPool4(sf4.MachineID())
 id, err := pool4.NextID(goroutineIndex)
+```
+
+---
+
+## 命令行工具
+
+仓库根目录是 `package main`，可直接安装：
+
+```bash
+go install github.com/H-H1/snowflakeid@latest
+```
+
+```bash
+snowflakeid                       # v1 生成 1 个 ID
+snowflakeid -v 4 -n 5             # v4 生成 5 个
+snowflakeid -v 4 -pool -n 8       # v4 分片池生成 8 个
+snowflakeid explain -v 4 356088697336360960
+# ID:            356088697336360960
+# 版本 / ver:    v4
+# 时间 / time:   2026-09-09 22:49:21.253 +08:00
+# 机器 / machine: 63
+# 序列 / seq:    0
 ```
 
 ---

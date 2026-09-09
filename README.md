@@ -281,6 +281,8 @@ Note: `getMachineID` takes ~4.3 ms and allocates on the heap. Call it once at in
 ## Quick Start
 
 ```go
+import snowflakeid "github.com/H-H1/snowflakeid/snowflakeid"
+
 // Single instance
 sf, err := snowflakeid.NewSnowflakeAuto()
 id, err := sf.NextID()
@@ -294,6 +296,28 @@ sf4, err := snowflakeid.NewSnowflake4Auto()
 id, err := sf4.NextID()
 pool4, err := snowflakeid.NewShardPool4(sf4.MachineID())
 id, err := pool4.NextID(goroutineIndex)
+```
+
+---
+
+## CLI
+
+The repository root is a `package main`, installable directly:
+
+```bash
+go install github.com/H-H1/snowflakeid@latest
+```
+
+```bash
+snowflakeid                       # one v1 ID
+snowflakeid -v 4 -n 5             # five v4 IDs
+snowflakeid -v 4 -pool -n 8       # eight v4 IDs via the shard pool
+snowflakeid explain -v 4 356088697336360960
+# ID:            356088697336360960
+# 版本 / ver:    v4
+# 时间 / time:   2026-09-09 22:49:21.253 +08:00
+# 机器 / machine: 63
+# 序列 / seq:    0
 ```
 
 ---
