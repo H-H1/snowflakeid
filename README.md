@@ -283,12 +283,12 @@ A tick, once used, is never issued from again → the high bits never regress.
 The other half of collisions comes from *other issuers*. Even if two machines (or two processes on one machine) physically emit IDs in the same millisecond, their machineID bits differ → the IDs differ. The derivation formula plugs one hole per dimension:
 
 ```go
-low 12 bits of MAC (machine) ^ PID (process) ^ boot-time nanos (lifetime)
+low 12 bits of MAC (machine) ^ NIC IPv4 (network) ^ boot-time nanos (lifetime)
 ```
 
-- Two processes on one host: PIDs necessarily differ → machineIDs necessarily differ (XOR is a bijection for a fixed MAC)
+- Two containers/pods on one host: IPs necessarily differ → machineIDs necessarily differ (XOR is a bijection for a fixed MAC)
 - Same process across restarts: boot nanos necessarily differ → machineID differs
-- Across machines: MACs differ, but after truncation to 12 bits they may collide — degrading to a random collision of ≈1/4096 per pair (1/1024 for v4), the inherent floor of any coordination-free scheme
+- Across machines: MACs/IPs differ, but after truncation to 12 bits they may collide — degrading to a random collision of ≈1/4096 per pair (1/1024 for v4), the inherent floor of any coordination-free scheme
 
 #### Defense 3: sequence — no double-counting within one millisecond
 
@@ -305,7 +305,7 @@ It increments on every call, so IDs within one millisecond never repeat; when th
 | Defense | Field guarded | Threat | Mechanism |
 |---------|---------------|--------|-----------|
 | Stall on rollback | tick | Clock rollback reusing old ticks | `waitNextTick` spin |
-| Identity isolation | machineID | Multi-host / multi-process / restart collisions | MAC ⊕ PID ⊕ nanos derivation |
+| Identity isolation | machineID | Multi-host / multi-container / restart collisions | MAC ⊕ IP ⊕ nanos derivation |
 | Sequential issuance | sequence | Multiple calls within one ms | `(seq+1) & mask` |
 
 Bottom line: rollback-safety comes from the **issuing strategy and machine-ID stability**, not sequence width. v4's 12-bit sequence buys **single-instance throughput** (4096/ms vs 2048/ms), not rollback safety.
@@ -316,26 +316,28 @@ Bottom line: rollback-safety comes from the **issuing strategy and machine-ID st
 
 ```go
 // Last two bytes of the first non-loopback NIC's MAC (machine dimension)
-// ^ process ID (process dimension) ^ startup time in nanoseconds
+// ^ the same NIC's IPv4 (network dimension) ^ startup time in nanoseconds
 // (lifetime dimension), keep low 12 bits
 val := int64(mac[len(mac)-2])<<8 | int64(mac[len(mac)-1])
-return (val ^ int64(os.Getpid()) ^ time.Now().UnixNano()) & 0xFFF, nil
+ipMask := int64(v4[0])<<24 | int64(v4[1])<<16 | int64(v4[2])<<8 | int64(v4[3])
+return (val ^ ipMask ^ time.Now().UnixNano()) & 0xFFF, nil
 ```
 
-### Why mix in the PID and the startup time
+### Why mix in the IP and the startup time
 
-With only the MAC low 12 bits, **multiple processes on one machine collide deterministically**: the machine ID is machine-level, so two processes get the same value, number independently, and produce duplicate IDs as soon as they hit the same millisecond with the same sequence number.
+With only the MAC low 12 bits, **multiple issuers on one machine collide deterministically**: the machine ID is machine-level, so two issuers get the same value, number independently, and produce duplicate IDs as soon as they hit the same millisecond with the same sequence number.
 
-Adding just the PID still leaves two failure modes:
+The IP plugs exactly this dimension — every K8s pod and every Docker container gets its own IP, so co-located issuers are naturally distinct at the network layer:
 
-| Scenario | Why |
-|----------|-----|
-| Containers | PID namespaces isolate — every container sees its own PID as 1, so the PID dimension fails entirely |
-| PID reuse | Linux recycles PIDs; a restart can draw the same PID again, reopening the collision window |
+| Scenario | Covered by | Why |
+|----------|------------|-----|
+| Multiple containers/pods per host | IPv4 | Each container/pod owns a unique IP (exactly where the PID namespace fails) |
+| Dual NICs whose MAC low 12 bits collide | IPv4 | MACs may share low bits, IPs differ |
+| DHCP lease renewal / IP drift | Boot nanos | Time moves forward; an IP change is harmless |
+| Restart | Boot nanos | Nanos differ after a restart, changing the machine ID and sidestepping the "restart within the same millisecond, sequence restarts at zero" window |
+| NIC without an IPv4 | Fallback | The IP contributes 0; MAC + nanos still cover it |
 
-Hence the third dimension: **startup time in nanoseconds**. Time moves forward monotonically, so it naturally distinguishes two process lifetimes — after a restart the nanos differ, the machine ID changes, and the "restart within the same millisecond, sequence restarts at zero" window is sidestepped.
-
-A collision requires the low 12 bits of all three factors to cancel out **simultaneously** — probability ≈ 1/4096 (1/1024 for v4). Every structured deterministic collision (same-machine multi-process, PID reuse, containers) is reduced to a uniform random one, which is near the theoretical floor for any coordination-free scheme: a 12-bit space holds only 4096 values, the collision lower bound is the birthday problem, and fleets of a few dozen instances should switch to coordinated assignment.
+A collision requires the low 12 bits of all three factors to cancel out **simultaneously** — probability ≈ 1/4096 (1/1024 for v4). Every structured deterministic collision (same-machine multi-process, containers, restarts) is reduced to a uniform random one, which is near the theoretical floor for any coordination-free scheme: a 12-bit space holds only 4096 values, the collision lower bound is the birthday problem, and fleets of a few dozen instances should switch to coordinated assignment.
 
 Notes:
 - The machine ID differs on every launch — **do not persist it**
