@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	snowflakeid "github.com/H-H1/snowflakeid/snowflakeid"
+	snowflakeid "github.com/H-H1/snowflakeid"
 	bwsnow "github.com/bwmarrin/snowflake"
 	"github.com/google/uuid"
 	"github.com/oklog/ulid/v2"

@@ -281,7 +281,7 @@ Note: `getMachineID` takes ~4.3 ms and allocates on the heap. Call it once at in
 ## Quick Start
 
 ```go
-import snowflakeid "github.com/H-H1/snowflakeid/snowflakeid"
+import snowflakeid "github.com/H-H1/snowflakeid"
 
 // Single instance
 sf, err := snowflakeid.NewSnowflakeAuto()
@@ -302,10 +302,10 @@ id, err := pool4.NextID(goroutineIndex)
 
 ## CLI
 
-The repository root is a `package main`, installable directly:
+The CLI lives in `cmd/snowflakeid`; the library stays at the module root (shortest import path):
 
 ```bash
-go install github.com/H-H1/snowflakeid@latest
+go install github.com/H-H1/snowflakeid/cmd/snowflakeid@latest
 ```
 
 ```bash

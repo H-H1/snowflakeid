@@ -3,7 +3,7 @@ package main
 // snowflakeid 命令行工具：生成与反解分布式 ID。
 // 安装 / Install:
 //
-//	go install github.com/H-H1/snowflakeid@latest
+//	go install github.com/H-H1/snowflakeid/cmd/snowflakeid@latest
 //
 // snowflakeid CLI: generate and decode distributed IDs.
 import (
@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"time"
 
-	snowflakeid "github.com/H-H1/snowflakeid/snowflakeid"
+	snowflakeid "github.com/H-H1/snowflakeid"
 )
 
 // epochMs 与库内各版本一致：2024-01-01 00:00:00 UTC（毫秒）

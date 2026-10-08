@@ -279,7 +279,7 @@ maxMachineID4 = 0b000011111111   (10位掩码, 1023)
 ## 快速开始
 
 ```go
-import snowflakeid "github.com/H-H1/snowflakeid/snowflakeid"
+import snowflakeid "github.com/H-H1/snowflakeid"
 
 // 单实例
 sf, err := snowflakeid.NewSnowflakeAuto()
@@ -300,10 +300,10 @@ id, err := pool4.NextID(goroutineIndex)
 
 ## 命令行工具
 
-仓库根目录是 `package main`，可直接安装：
+CLI 位于 `cmd/snowflakeid`，库保持根目录（import 路径最短）：
 
 ```bash
-go install github.com/H-H1/snowflakeid@latest
+go install github.com/H-H1/snowflakeid/cmd/snowflakeid@latest
 ```
 
 ```bash
