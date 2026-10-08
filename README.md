@@ -229,6 +229,89 @@ The shard pool eliminates this problem entirely — contention drops to 1/N, seq
 
 ---
 
+## Does a Wider Sequence Field Reduce Duplicates During Clock Rollback?
+
+**No.** This is an intuition trap, for two reasons:
+
+### Reason 1: This project spins and issues nothing during rollback
+
+```go
+if tick < s.lastStamp {
+    // Clock rolled back: spin until the wall clock catches up; no IDs are issued.
+    tick = s.waitNextTick(s.lastStamp)
+}
+```
+
+On rollback the generator stalls until the wall clock passes `lastStamp` again. Not a single ID is issued inside the rolled-back region, so no duplicates can occur there. The sequence width is irrelevant on this path.
+
+### Reason 2: Even "issuing through" restarts the sequence at 0
+
+Suppose an implementation does not wait but instead advances virtually (`lastStamp++`), or a process resumes with stale state: the rollback revisits ticks that were already used. A duplicate requires the full triple `(tick, machineID, sequence)` to match — and this design **resets the sequence to 0 at every new tick, incrementing sequentially**. Revisiting a millisecond starts the sequence from 0 again: however many IDs that millisecond issued before, exactly that many are re-issued identically. **No sequence width can save that**:
+
+```
+Before rollback, tick=T issued 500 IDs (sequence 0..499)
+After rollback, tick=T is revisited and the sequence starts from 0 again
+→ The first 500 IDs are byte-identical to before, whether the sequence is 11 or 12 bits
+```
+
+### The one case where width helps: random starting point
+
+Only if the sequence changes from **sequential** to a **random start** (or random allocation) does width matter — the chance of landing in the already-used region when revisiting a millisecond is `issued / 2^bits`, and v4 (12 bits / 4096) does halve that versus v1 (11 bits / 2048). But a random sequence sacrifices intra-ID monotonicity, and the cost outweighs simply spinning: **this project chose spinning**.
+
+### The three defenses that actually prevent duplicates
+
+The ID is assembled from three **non-overlapping bit fields** (`tick<<shift | machineID<<shift | sequence`), therefore:
+
+```
+IDs are equal ⟺ the full triple (tick, machineID, sequence) matches
+```
+
+If any one field differs, the IDs differ. Each defense guards one field:
+
+#### Defense 1: tick — time only moves forward
+
+Within an instance's lifetime, tick is **monotonically non-decreasing**, guaranteed by three mechanisms:
+
+- Normal advance: every call reads the wall clock, so `tick >= lastStamp` always holds
+- Clock rollback: `waitNextTick` spins until the clock catches up — zero issuance in the rolled-back region
+- Sequence exhaustion: spin forward to the next tick instead of reusing the current one
+
+A tick, once used, is never issued from again → the high bits never regress.
+
+#### Defense 2: machineID — issuer identity isolation
+
+The other half of collisions comes from *other issuers*. Even if two machines (or two processes on one machine) physically emit IDs in the same millisecond, their machineID bits differ → the IDs differ. The derivation formula plugs one hole per dimension:
+
+```go
+low 12 bits of MAC (machine) ^ PID (process) ^ boot-time nanos (lifetime)
+```
+
+- Two processes on one host: PIDs necessarily differ → machineIDs necessarily differ (XOR is a bijection for a fixed MAC)
+- Same process across restarts: boot nanos necessarily differ → machineID differs
+- Across machines: MACs differ, but after truncation to 12 bits they may collide — degrading to a random collision of ≈1/4096 per pair (1/1024 for v4), the inherent floor of any coordination-free scheme
+
+#### Defense 3: sequence — no double-counting within one millisecond
+
+When tick and machineID are both identical (same instance, same millisecond), the sequence distinguishes each call:
+
+```go
+s.sequence = (s.sequence + 1) & maxSequence
+```
+
+It increments on every call, so IDs within one millisecond never repeat; when the counter wraps (2048/4096 depending on version) it spins into the next millisecond and Defense 1 takes over. Note the precondition: **tick must never roll back** — Defense 3 is built on top of Defense 1, which is exactly why a wider sequence cannot prevent rollback duplicates (previous section).
+
+#### Summary
+
+| Defense | Field guarded | Threat | Mechanism |
+|---------|---------------|--------|-----------|
+| Stall on rollback | tick | Clock rollback reusing old ticks | `waitNextTick` spin |
+| Identity isolation | machineID | Multi-host / multi-process / restart collisions | MAC ⊕ PID ⊕ nanos derivation |
+| Sequential issuance | sequence | Multiple calls within one ms | `(seq+1) & mask` |
+
+Bottom line: rollback-safety comes from the **issuing strategy and machine-ID stability**, not sequence width. v4's 12-bit sequence buys **single-instance throughput** (4096/ms vs 2048/ms), not rollback safety.
+
+---
+
 ## Auto Machine ID Derivation
 
 ```go
